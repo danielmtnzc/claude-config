@@ -1,0 +1,11 @@
+{
+  "name": "claude-config",
+  "owner": { "name": "danielmtnzc" },
+  "plugins": [
+    {
+      "name": "panel-agentes",
+      "source": "./plugins/panel-agentes",
+      "description": "Panel a la derecha del chat que muestra qué está haciendo cada subagente y con qué modelo."
+    }
+  ]
+}
