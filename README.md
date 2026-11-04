@@ -14,7 +14,7 @@ Configuración global de Claude Code:
    cd claude-config
    ```
 2. Ejecuta el instalador:
-   - **Windows (PowerShell):**
+   - **Windows:** doble clic en `install.cmd`, o desde PowerShell:
      ```
      powershell -ExecutionPolicy Bypass -File install.ps1
      ```
@@ -46,7 +46,8 @@ En el otro ordenador:
 
 ```
 git pull
-powershell -ExecutionPolicy Bypass -File install.ps1
 ```
+
+y doble clic en `install.cmd` (o `bash install.sh` en Mac/Linux).
 
 Edita siempre los archivos del repositorio, no los de `~/.claude`: el instalador sobrescribe los agentes y el bloque de reglas.
