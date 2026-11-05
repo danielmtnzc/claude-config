@@ -388,8 +388,19 @@ export const register: Register = on => {
     const done = list.filter(a => a.status !== 'trabajando').slice().reverse()
     const totalActions = list.reduce((s, a) => s + a.actions, 0)
 
+    // La app solo deja abrir la conversación de los agentes que sigue
+    // listando; de los que ya no tiene, el enlace no se muestra.
+    let viewable = new Set<string>()
+    try {
+      viewable = new Set((await $.agent.list()).map(x => x.id))
+    } catch {
+      // Sin lista: se muestra el enlace y, si falla, se explica por qué.
+      viewable = new Set(list.map(a => a.id))
+    }
     const ver = (id: string) => () => {
-      void $.ui.view({ agentId: id })
+      void $.ui.view({ agentId: id }).then(shown => {
+        if (shown.deny) $.ui.toast(`No se puede abrir esa conversación: ${shown.deny}`)
+      })
     }
     const abrir = (id: string) => () => {
       void update($, open, l => toggle(l, id))
@@ -625,9 +636,11 @@ export const register: Register = on => {
                   <Text>{`${failed ? '✗' : '✓'} ${a.result}`}</Text>
                 </Box>
               )}
-              <Button key={'conv:' + a.id} plain onPress={ver(a.id)}>
-                <Text color={C.link}>↗ ver conversación</Text>
-              </Button>
+              {viewable.has(a.id) && (
+                <Button key={'conv:' + a.id} plain onPress={ver(a.id)}>
+                  <Text color={C.link}>↗ ver conversación</Text>
+                </Button>
+              )}
             </Box>
           )}
         </Box>
