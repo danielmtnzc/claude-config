@@ -265,10 +265,13 @@ export const register: Register = on => {
       const t = await $.clock.now()
       await update($, agents, list =>
         list.map(a => {
-          if (a.id !== id || a.status !== 'trabajando') return a
+          if (a.id !== id) return a
           const step: AgentStep = { at: t - a.startedAt, icon: said.icon, text: said.past }
+          // Si ya estaba terminado y vuelve a actuar, es que lo han retomado.
           return {
             ...a,
+            status: 'trabajando',
+            endedAt: undefined,
             activity: said.now,
             actions: a.actions + 1,
             steps: [...a.steps, step].slice(-MAX_STEPS),
@@ -279,23 +282,19 @@ export const register: Register = on => {
 
     const ran = await next(e)
 
-    // Fin de un agente lanzado en primer plano, con su respuesta.
-    if (e.tool === 'Agent' && !args.run_in_background) {
-      const failed = ran.deny !== undefined || ran.isError === true
-      const result = failed ? undefined : firstParagraph(ran.text)
+    // Si la llamada a Agent falla, el agente no llega a trabajar.
+    // (Su final normal lo marca turn.complete, más abajo: la herramienta Agent
+    // puede volver al instante con "Async agent launched" mientras el agente
+    // sigue trabajando en segundo plano.)
+    if (e.tool === 'Agent' && (ran.deny !== undefined || ran.isError === true)) {
       const t = await $.clock.now()
       await update($, agents, list =>
-        list.map(a => {
-          if (a.toolUseId !== e.tool_use_id) return a
-          // El aviso de fin (SubagentStop) puede haber llegado antes: solo
-          // completamos lo que falte.
-          const withResult = { ...a, result: a.result ?? result }
-          return a.status === 'trabajando'
-            ? { ...withResult, status: failed ? 'error' : 'terminado', endedAt: t, activity: '' }
-            : withResult
-        }),
+        list.map(a =>
+          a.toolUseId === e.tool_use_id && a.status === 'trabajando'
+            ? { ...a, status: 'error', endedAt: t, activity: '' }
+            : a,
+        ),
       )
-      await update($, now, () => t)
     }
 
     // El plan: la lista de tareas del coordinador.
@@ -328,7 +327,33 @@ export const register: Register = on => {
     return ran
   })
 
-  // Final de un agente, también de los que corren en segundo plano.
+  // Final de cada agente (primer plano o segundo plano), con su respuesta.
+  on('turn.complete', async ($, e, next) => {
+    const r = await next(e)
+    if (!e.agentId) return r
+    const id = e.agentId
+    const failed = e.reason !== 'answer'
+    const result = firstParagraph(e.answer)
+    const t = await $.clock.now()
+    await update($, agents, list =>
+      list.map(a =>
+        a.id === id
+          ? {
+              ...a,
+              status: failed ? 'error' : 'terminado',
+              endedAt: t,
+              activity: '',
+              result: result ?? a.result,
+            }
+          : a,
+      ),
+    )
+    await update($, now, () => t)
+
+    return r
+  })
+
+  // Respaldo: el aviso clásico de fin, por si turn.complete no llegara.
   on('classic.SubagentStop', async ($, e, next) => {
     const t = await $.clock.now()
     const result = firstParagraph(e.last_assistant_message)

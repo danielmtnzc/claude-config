@@ -54,18 +54,35 @@ test('al terminar, el desplegable muestra sus acciones y el resultado', async ($
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'ag-1' }))
   on('tool.call', (_, e) =>
     e.tool === 'Agent'
-      ? { result: {}, text: 'LoginButton se usa en login_screen.dart.\n\nDetalles…' }
+      ? { result: {}, text: 'Async agent launched successfully. agentId: ag-1' }
       : { result: {} },
   )
+  on('turn.complete', (_, e) => ({ text: e.answer }))
 
   await $.agent.spawn(SPAWN)
-  await $.tool.call({ tool: 'Grep', pattern: 'LoginButton', agentId: 'ag-1' })
+  // La herramienta Agent vuelve al momento si el agente va en segundo plano:
+  // eso no debe marcarlo como terminado.
   await $.tool.call({
     tool: 'Agent',
     description: 'Buscar LoginButton',
     prompt: 'x',
     subagent_type: 'rapido',
+    run_in_background: true,
     tool_use_id: 'tu-1',
+  } as never)
+  {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect(await ui.find({ type: 'Text', text: /EN VIVO/ })).toBeDefined()
+    await ui.unmount()
+  }
+  await $.tool.call({ tool: 'Grep', pattern: 'LoginButton', agentId: 'ag-1' })
+  await $.turn.complete({
+    agentId: 'ag-1',
+    turnId: 't-1',
+    reason: 'answer',
+    answer: 'LoginButton se usa en login_screen.dart.\n\nDetalles…',
+    durationMs: 1000,
+    isAborted: false,
   } as never)
 
   for (const surface of ['terminal', 'desktop'] as const) {
