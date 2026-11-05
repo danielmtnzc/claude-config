@@ -25,27 +25,35 @@ const lastPrompt = atom({ plugin: 'panel-agentes', key: 'lastPrompt' } as const,
 
 // ---------- colores ----------
 
+// El panel no sabe si la app está en modo claro u oscuro, así que:
+// - el texto usa colores del tema ('inactive', 'success'…), que la app adapta;
+// - no se pintan fondos oscuros fijos;
+// - los colores fijos (dibujos, avatares, bordes) son tonos medios que se ven
+//   bien sobre blanco y sobre negro.
 const C = {
-  ok: '#3ddc97',
-  warn: '#ffb547',
-  warnBg: '#3a2c14',
-  dim: '#a39e96',
-  line: '#3a3633',
-  card: '#201f1d',
-  okBg: '#13261d',
-  dark: '#181716',
+  // Colores del tema, para texto y bordes.
+  dim: 'inactive',
+  ok: 'success',
+  warn: 'warning',
+  line: 'inactive',
+  link: 'suggestion',
+  // Colores fijos, para dibujos y etiquetas con fondo propio.
+  okHex: '#22a06b',
+  warnHex: '#e8960c',
+  trackHex: 'rgba(128,128,128,0.3)',
+  onColor: '#ffffff',
 }
 
-type Look = { name: string; letter: string; color: string; bg: string }
+type Look = { name: string; letter: string; color: string }
 const LOOKS: Record<string, Look> = {
-  haiku: { name: 'Haiku', letter: 'H', color: '#3ddc97', bg: '#132a20' },
-  sonnet: { name: 'Sonnet', letter: 'S', color: '#5b9dff', bg: '#16223a' },
-  opus: { name: 'Opus', letter: 'O', color: '#c084fc', bg: '#261a36' },
-  fable: { name: 'Fable', letter: 'F', color: '#f472b6', bg: '#2e1826' },
-  mythos: { name: 'Mythos', letter: 'M', color: '#f472b6', bg: '#2e1826' },
+  haiku: { name: 'Haiku', letter: 'H', color: '#22a06b' },
+  sonnet: { name: 'Sonnet', letter: 'S', color: '#3b82f6' },
+  opus: { name: 'Opus', letter: 'O', color: '#a855f7' },
+  fable: { name: 'Fable', letter: 'F', color: '#db2777' },
+  mythos: { name: 'Mythos', letter: 'M', color: '#db2777' },
 }
 function look(model: string): Look {
-  return LOOKS[model] ?? { name: model, letter: (model[0] ?? '?').toUpperCase(), color: C.dim, bg: C.card }
+  return LOOKS[model] ?? { name: model, letter: (model[0] ?? '?').toUpperCase(), color: '#808080' }
 }
 
 // ---------- utilidades ----------
@@ -137,7 +145,7 @@ function toggle(list: string[], id: string): string[] {
 
 // ---------- dibujos (solo en escritorio, web y móvil) ----------
 
-function ringSvg(done: number, going: number, pct: number): string {
+function ringSvg(done: number, going: number): string {
   const r = 24
   const c = 2 * Math.PI * r
   const d = c * done
@@ -146,7 +154,7 @@ function ringSvg(done: number, going: number, pct: number): string {
     len <= 0
       ? ''
       : `<circle cx="29" cy="29" r="${r}" fill="none" stroke="${color}" stroke-width="6" stroke-linecap="round" stroke-dasharray="${len.toFixed(1)} ${c.toFixed(1)}" stroke-dashoffset="${(-off).toFixed(1)}" transform="rotate(-90 29 29)"/>`
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="58" height="58" viewBox="0 0 58 58"><circle cx="29" cy="29" r="${r}" fill="none" stroke="${C.line}" stroke-width="6"/>${arc(d, 0, C.ok)}${arc(g, d, C.warn)}<text x="29" y="34" text-anchor="middle" fill="#f1eee8" font-size="14" font-weight="800" font-family="system-ui,sans-serif">${pct}%</text></svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="58" height="58" viewBox="0 0 58 58"><circle cx="29" cy="29" r="${r}" fill="none" stroke="${C.trackHex}" stroke-width="6"/>${arc(d, 0, C.okHex)}${arc(g, d, C.warnHex)}</svg>`
 }
 
 function segmentsSvg(states: string[]): string {
@@ -156,7 +164,7 @@ function segmentsSvg(states: string[]): string {
   const sw = (w - gap * (n - 1)) / n
   const rects = states
     .map((st, i) => {
-      const color = st === 'completed' ? C.ok : st === 'in_progress' ? C.warn : C.line
+      const color = st === 'completed' ? C.okHex : st === 'in_progress' ? C.warnHex : C.trackHex
       return `<rect x="${(i * (sw + gap)).toFixed(1)}" y="0" width="${sw.toFixed(1)}" height="6" rx="3" fill="${color}"/>`
     })
     .join('')
@@ -182,7 +190,7 @@ function distSvg(parts: { n: number; color: string }[]): string {
 
 function avatarSvg(l: Look, size: number): string {
   const h = size / 2
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><circle cx="${h}" cy="${h}" r="${h}" fill="${l.color}"/><text x="${h}" y="${h + size * 0.17}" text-anchor="middle" fill="${C.dark}" font-size="${Math.round(size * 0.45)}" font-weight="800" font-family="system-ui,sans-serif">${l.letter}</text></svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><circle cx="${h}" cy="${h}" r="${h}" fill="${l.color}"/><text x="${h}" y="${h + size * 0.17}" text-anchor="middle" fill="${C.onColor}" font-size="${Math.round(size * 0.45)}" font-weight="800" font-family="system-ui,sans-serif">${l.letter}</text></svg>`
 }
 
 // ---------- hooks ----------
@@ -375,7 +383,7 @@ export const register: Register = on => {
       return rich && Svg ? (
         <Svg source={avatarSvg(l, size)} alt={l.name} width={size} height={size} />
       ) : (
-        <Text backgroundColor={l.color} color={C.dark} weight="bold">
+        <Text backgroundColor={l.color} color={C.onColor} weight="bold">
           {` ${l.letter} `}
         </Text>
       )
@@ -396,7 +404,7 @@ export const register: Register = on => {
           ⚡ Agentes
         </Text>
         {running.length > 0 ? (
-          <Text backgroundColor={C.warn} color={C.dark} weight="bold" size="caption">
+          <Text backgroundColor={C.warnHex} color={C.onColor} weight="bold" size="caption">
             {` ● ${running.length} EN VIVO `}
           </Text>
         ) : (
@@ -420,21 +428,21 @@ export const register: Register = on => {
           alignItems="center"
           borderStyle="round"
           borderColor={C.line}
-          backgroundColor={C.card}
           paddingX={1}
         >
-          {rich && Svg ? (
+          {rich && Svg && (
             <Svg
-              source={ringSvg(nDone / parts.length, nGoing / parts.length, pct)}
+              source={ringSvg(nDone / parts.length, nGoing / parts.length)}
               alt={`${pct}% del plan hecho`}
-              width={58}
-              height={58}
+              width={44}
+              height={44}
             />
-          ) : (
-            <Text weight="bold" color={C.ok}>
-              {`${pct}%`}
-            </Text>
           )}
+          {/* El porcentaje va como texto, no dentro del dibujo, para que la
+              app le dé el color del tema (claro u oscuro). */}
+          <Text weight="bold" size="title">
+            {`${pct}%`}
+          </Text>
           <Box flexDirection="column" flexGrow={1}>
             <Box flexDirection="row" justifyContent="space-between">
               <Text size="caption" color={C.dim}>
@@ -473,7 +481,6 @@ export const register: Register = on => {
         flexGrow={1}
         borderStyle="round"
         borderColor={C.line}
-        backgroundColor={C.card}
         paddingX={1}
       >
         <Text weight="bold" size="title" color={color}>
@@ -504,7 +511,6 @@ export const register: Register = on => {
           marginTop={1}
           borderStyle="round"
           borderColor={l.color}
-          backgroundColor={l.bg}
           paddingX={1}
         >
           {avatar(a, 30)}
@@ -518,7 +524,7 @@ export const register: Register = on => {
             </Box>
             <Text weight="bold">{a.description}</Text>
             <Box flexDirection="row" justifyContent="space-between">
-              <Text backgroundColor={C.warnBg} color={C.warn}>
+              <Text color={C.warn}>
                 {` ● ${a.activity} `}
               </Text>
               <Text color={C.dim} size="caption">
@@ -545,7 +551,6 @@ export const register: Register = on => {
           marginTop={1}
           borderStyle="round"
           borderColor={isOpen ? l.color : C.line}
-          backgroundColor={isOpen ? l.bg : undefined}
           paddingX={1}
         >
           <Box flexDirection="row" gap={1} alignItems="center">
@@ -575,7 +580,7 @@ export const register: Register = on => {
               ))}
               {(hidden > 0 || showAll) && a.steps.length > STEPS_SHOWN && (
                 <Button key={'todo:' + a.id} plain onPress={todo(a.id)}>
-                  <Text color={l.color}>
+                  <Text color={C.link}>
                     {showAll
                       ? '− ver menos'
                       : `+ ${Math.min(hidden, a.steps.length - shown.length)} acciones más`}
@@ -590,14 +595,13 @@ export const register: Register = on => {
                   marginTop={1}
                   borderStyle="round"
                   borderColor={failed ? 'error' : C.ok}
-                  backgroundColor={failed ? undefined : C.okBg}
                   paddingX={1}
                 >
                   <Text>{`${failed ? '✗' : '✓'} ${a.result}`}</Text>
                 </Box>
               )}
               <Button key={'conv:' + a.id} plain onPress={ver(a.id)}>
-                <Text color={C.dim}>↗ ver conversación</Text>
+                <Text color={C.link}>↗ ver conversación</Text>
               </Button>
             </Box>
           )}

@@ -1,6 +1,6 @@
 {
   "name": "panel-agentes",
-  "version":"0.2.0",
+  "version":"0.2.1",
   "description": "Panel a la derecha del chat que muestra qué está haciendo cada subagente (rapido, normal, experto) y con qué modelo.",
   "types": "./types/index.d.ts"
 }
