@@ -1,11 +1,16 @@
 {
   "name": "claude-config",
-  "owner": { "name": "danielmtnzc" },
+  "owner": { "name": "danielmtnzc-dev" },
   "plugins": [
+    {
+      "name": "reparto",
+      "source": "./plugins/reparto",
+      "description": "Reparto del trabajo para gastar poco uso: reglas, agentes rapido (Haiku) y experto (Opus), Sonnet por defecto y verificación de Flutter."
+    },
     {
       "name": "panel-agentes",
       "source": "./plugins/panel-agentes",
-      "description": "Panel a la derecha del chat que muestra qué está haciendo cada subagente y con qué modelo."
+      "description": "Panel a la derecha del chat con lo que hace cada subagente, el uso de tus límites y el consumo estimado por día y semana (/consumo)."
     }
   ]
 }

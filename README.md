@@ -1,68 +1,51 @@
 # claude-config
 
-Configuración global de Claude Code:
+Configuración de Claude Code pensada para gastar poco uso, en dos plugins:
 
-- **Agentes por complejidad** (`agents/`): `rapido` (Haiku), `normal` (Sonnet) y `experto` (Opus).
-- **Reglas de reparto** (`CLAUDE.md`): la sesión principal actúa como coordinador y delega cada tarea según su dificultad. Incluye reglas para peticiones grandes, documentación de proyectos (índice + secciones) y proyectos Flutter.
-- **Modelo por defecto**: Sonnet para la sesión principal, para cuidar el uso semanal.
-- **Panel de agentes** (`plugins/panel-agentes`): un mod que añade a la derecha del chat un panel con lo que está haciendo cada subagente. Se instala aparte (ver abajo).
+- **`reparto`** (`plugins/reparto`): cómo se reparte el trabajo.
+  - **Reglas** (`reglas.md`): la sesión principal (Sonnet) hace el trabajo y solo delega en dos agentes. Incluyen la entrevista breve antes de las peticiones grandes, la documentación de proyectos (índice + secciones), el registro de bugs resueltos en `docs/claude/soluciones.md`, el recordatorio de `/clear` al cambiar de tarea y el reparto para Flutter.
+  - **Agentes**: `rapido` (Haiku) para búsquedas amplias y cambios mecánicos; `experto` (Opus) como consultor que diagnostica y planifica sin editar, programa solo tras dos fallos de Sonnet o en cambios muy delicados, y revisa los diffs críticos.
+  - **Sonnet por defecto** si no has elegido otro modelo.
+  - **Verificación de Flutter**: al terminar cada respuesta, si se ha editado algún `.dart`, ejecuta `flutter analyze` y devuelve a Claude solo los errores.
+- **`panel-agentes`** (`plugins/panel-agentes`): panel a la derecha del chat con lo que hace cada subagente, el uso de tus límites y el **registro de consumo** (`/consumo`).
 
-## Instalar el panel de agentes
+Ni la verificación de Flutter ni el registro de consumo pasan por el modelo: no gastan uso.
 
-Una vez por ordenador. En la app de escritorio de Claude: pulsa **+** junto al cuadro de mensaje → **Plugins** → **Add marketplace**, escribe `danielmtnzc/claude-config` y después **Add plugin** en `panel-agentes`.
+## Instalar
+
+En la app de escritorio de Claude: pulsa **+** junto al cuadro de mensaje → **Plugins** → **Add marketplace**, escribe `danielmtnzc-dev/claude-config` y después **Add plugin** en `reparto` y en `panel-agentes`.
 
 O desde una terminal:
 
 ```
-claude plugin install panel-agentes --marketplace danielmtnzc/claude-config
+claude plugin install reparto --marketplace danielmtnzc-dev/claude-config
+claude plugin install panel-agentes --marketplace danielmtnzc-dev/claude-config
 ```
 
-Como el repositorio es privado, el ordenador necesita tener git conectado a tu cuenta de GitHub (por ejemplo con `gh auth login` y `gh auth setup-git`).
+O con el instalador del repositorio, que además **quita lo que dejaban las versiones anteriores** en `~/.claude` (los agentes `rapido`, `normal` y `experto`, y el bloque de reglas entre `claude-config:inicio` y `claude-config:fin` de `CLAUDE.md`, guardando una copia en `CLAUDE.md.bak`):
 
-Para actualizarlo después de un cambio: `claude plugin update panel-agentes` o desde el mismo menú de Plugins.
+- **Windows:** doble clic en `install.cmd`.
+- **Mac / Linux:** `bash install.sh`.
 
-## Instalar en un ordenador
+En un ordenador que tenía instalada la versión anterior, ejecuta el instalador una vez para que no queden las reglas duplicadas.
 
-1. Descarga el repositorio:
-   ```
-   git clone https://github.com/danielmtnzc/claude-config.git
-   cd claude-config
-   ```
-2. Ejecuta el instalador:
-   - **Windows:** doble clic en `install.cmd`, o desde PowerShell:
-     ```
-     powershell -ExecutionPolicy Bypass -File install.ps1
-     ```
-   - **Mac / Linux:**
-     ```
-     bash install.sh
-     ```
-3. Abre una sesión nueva de Claude Code.
-
-## Qué hace el instalador
-
-- Copia los agentes a `~/.claude/agents/`.
-- Añade las reglas a `~/.claude/CLAUDE.md` entre dos marcadores (`claude-config:inicio` / `claude-config:fin`). Si ya tenías un `CLAUDE.md`, conserva tu contenido y guarda una copia en `CLAUDE.md.bak`.
-- Pone `"model": "sonnet"` en `~/.claude/settings.json`, solo si no tenías ya un modelo elegido.
-
-Se puede ejecutar todas las veces que quieras: actualiza lo suyo y no toca lo demás.
+Como el repositorio es privado, el ordenador necesita tener git conectado a tu cuenta de GitHub (por ejemplo con `gh auth login` y `gh auth setup-git`). Los plugins se descargan de la rama `main` en GitHub: un cambio llega a los ordenadores después de hacer `git push`.
 
 ## Actualizar
 
-Cuando cambies algo en un ordenador:
+Cuando cambies algo (por ejemplo `plugins/reparto/reglas.md`):
 
-```
-git add -A
-git commit -m "Describe el cambio"
-git push
-```
+1. Sube el número de `version` en el `plugin.json` del plugin que hayas cambiado.
+2. Súbelo:
+   ```
+   git add -A
+   git commit -m "Describe el cambio"
+   git push
+   ```
+3. En cada ordenador: `claude plugin update reparto@claude-config` (o `panel-agentes@claude-config`), o desde el menú de Plugins, o doble clic en `install.cmd`. Después, abre una sesión nueva.
 
-En el otro ordenador:
+## Ver el consumo
 
-```
-git pull
-```
-
-y doble clic en `install.cmd` (o `bash install.sh` en Mac/Linux).
-
-Edita siempre los archivos del repositorio, no los de `~/.claude`: el instalador sobrescribe los agentes y el bloque de reglas.
+- `/consumo` en cualquier chat, o el botón **ver consumo** del panel de agentes: coste estimado de los últimos 14 días y las últimas 8 semanas, repartido por agente, la parte de Opus y el límite semanal más alto de cada semana.
+- Los datos completos están en `~/.claude/consumo/` (en Windows, `C:\Users\<usuario>\.claude\consumo\`), un CSV por mes que se abre con Excel. Cada ordenador guarda los suyos.
+- El coste se calcula con los precios de la API de `plugins/panel-agentes/precios.json`: sirve para comparar, no es lo que pagas con la suscripción.

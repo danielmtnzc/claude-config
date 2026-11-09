@@ -17,7 +17,7 @@ export type AgentRow = {
   id: string
   /** id de la llamada a la herramienta Agent que lo lanzó. */
   toolUseId: string
-  /** Tipo de agente: rapido, normal, experto, Explore... */
+  /** Tipo de agente, sin el prefijo del plugin: rapido, experto, Explore... */
   type: string
   /** Modelo en versión corta: haiku, sonnet, opus... */
   model: string
@@ -34,6 +34,8 @@ export type AgentRow = {
   steps: AgentStep[]
   /** Primer párrafo de su respuesta final, si se conoce. */
   result?: string
+  /** Coste estimado en dólares, cuando ha terminado. */
+  costUsd?: number
 }
 
 export type PlanPart = {
@@ -48,6 +50,40 @@ export type PlanState = {
   parts: PlanPart[]
 }
 
+/** Uso de los límites de la cuenta, como los da la última respuesta. */
+export type Limites = {
+  /** Porcentaje usado del límite semanal. */
+  semana?: number
+  /** Cuándo se reinicia el límite semanal (ISO 8601). */
+  semanaReinicio?: string
+  /** Porcentaje usado del límite de 5 horas. */
+  cincoHoras?: number
+}
+
+/** Coste de un periodo (un día o una semana), por agente. */
+export type PeriodoConsumo = {
+  /** Etiqueta para mostrar: "lu 09/11" o "sem. 03/11". */
+  etiqueta: string
+  /** Coste total estimado en dólares. */
+  total: number
+  /** Coste por agente: principal, rapido, experto, otros. */
+  porAgente: Record<string, number>
+  /** Coste de Opus, para ver qué parte se lleva. */
+  opus: number
+  /** Mayor porcentaje del límite semanal registrado en el periodo. */
+  limiteMax?: number
+}
+
+/** Lo que muestra el panel de consumo. */
+export type ResumenConsumo = {
+  dias: PeriodoConsumo[]
+  semanas: PeriodoConsumo[]
+  /** Carpeta donde están los archivos de registro. */
+  carpeta: string
+  /** Cuándo se calculó, en milisegundos. */
+  calculado: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'panel-agentes': {
@@ -60,6 +96,8 @@ declare module 'claude-code' {
       plan: Shaped<PlanState>
       /** Lo último que escribió la persona, para titular el plan. */
       lastPrompt: string
+      limites: Shaped<Limites>
+      resumen: Shaped<ResumenConsumo | null>
     }
   }
 }

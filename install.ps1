@@ -1,55 +1,56 @@
-# Instala esta configuracion en la carpeta .claude del usuario (Windows).
-# Se puede ejecutar varias veces: actualiza lo instalado sin borrar lo demas.
+# Instala la configuracion de Claude Code (Windows): los plugins reparto y
+# panel-agentes, y quita lo que instalaban las versiones anteriores en .claude.
+# Se puede ejecutar varias veces.
 # Uso: powershell -ExecutionPolicy Bypass -File install.ps1
 
 $ErrorActionPreference = 'Stop'
-$src = $PSScriptRoot
 $dst = Join-Path $HOME '.claude'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $start = '<!-- claude-config:inicio -->'
 $end = '<!-- claude-config:fin -->'
 
-New-Item -ItemType Directory -Force -Path (Join-Path $dst 'agents') | Out-Null
-
-# 1. Agentes
-Copy-Item -Path (Join-Path $src 'agents\*.md') -Destination (Join-Path $dst 'agents') -Force
-Write-Host 'Agentes copiados.'
-
-# 2. CLAUDE.md: se mete entre marcadores para poder actualizarlo sin tocar lo tuyo
-$rules = [IO.File]::ReadAllText((Join-Path $src 'CLAUDE.md'), $utf8).Trim()
-$block = "$start`r`n$rules`r`n$end"
+# 1. Limpieza de la instalacion antigua (ahora todo va en el plugin reparto)
+foreach ($old in @('rapido.md', 'normal.md', 'experto.md')) {
+    $f = Join-Path $dst "agents\$old"
+    if (Test-Path $f) { Remove-Item $f -Force; Write-Host "Agente antiguo quitado de .claude: $old" }
+}
 $claudeMd = Join-Path $dst 'CLAUDE.md'
 if (Test-Path $claudeMd) {
-    Copy-Item $claudeMd "$claudeMd.bak" -Force
     $current = [IO.File]::ReadAllText($claudeMd, $utf8)
-    $pattern = [regex]::Escape($start) + '[\s\S]*?' + [regex]::Escape($end)
+    $pattern = '\s*' + [regex]::Escape($start) + '[\s\S]*?' + [regex]::Escape($end) + '\s*'
     if ($current -match $pattern) {
-        $new = [regex]::Replace($current, $pattern, { param($m) $block })
-    } else {
-        $new = $current.TrimEnd() + "`r`n`r`n" + $block + "`r`n"
+        Copy-Item $claudeMd "$claudeMd.bak" -Force
+        $new = [regex]::Replace($current, $pattern, "`r`n`r`n").Trim()
+        if ($new -eq '') {
+            Remove-Item $claudeMd -Force
+            Write-Host 'Reglas antiguas quitadas de .claude\CLAUDE.md (copia en CLAUDE.md.bak).'
+        } else {
+            [IO.File]::WriteAllText($claudeMd, $new + "`r`n", $utf8)
+            Write-Host 'Reglas antiguas quitadas de .claude\CLAUDE.md; tu contenido se conserva (copia en CLAUDE.md.bak).'
+        }
     }
-    [IO.File]::WriteAllText($claudeMd, $new, $utf8)
-    Write-Host 'CLAUDE.md actualizado (copia anterior en CLAUDE.md.bak).'
-} else {
-    [IO.File]::WriteAllText($claudeMd, $block + "`r`n", $utf8)
-    Write-Host 'CLAUDE.md creado.'
 }
 
-# 3. settings.json: Sonnet como modelo por defecto, solo si no tienes uno elegido
-$settings = Join-Path $dst 'settings.json'
-if (Test-Path $settings) {
-    $json = [IO.File]::ReadAllText($settings, $utf8) | ConvertFrom-Json
-    if (-not ($json.PSObject.Properties.Name -contains 'model')) {
-        Copy-Item $settings "$settings.bak" -Force
-        $json | Add-Member -NotePropertyName 'model' -NotePropertyValue 'sonnet'
-        [IO.File]::WriteAllText($settings, ($json | ConvertTo-Json -Depth 50), $utf8)
-        Write-Host 'settings.json: modelo por defecto -> sonnet.'
-    } else {
-        Write-Host "settings.json: ya tenias un modelo ($($json.model)), no se cambia."
+# 2. Plugins
+$plugins = @('reparto', 'panel-agentes')
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+    # En PowerShell 5.1, la salida de error de un programa con 'Stop' corta el script.
+    $ErrorActionPreference = 'Continue'
+    # Si el marketplace se anadio desde el repositorio antiguo (sin -dev), se cambia por el nuevo.
+    $lista = (& claude plugin marketplace list 2>$null | Out-String)
+    if ($lista -match 'danielmtnzc/claude-config') {
+        & claude plugin marketplace remove claude-config 2>$null | Out-Null
+        Write-Host 'Marketplace antiguo (danielmtnzc/claude-config) sustituido por danielmtnzc-dev/claude-config.'
+    }
+    & claude plugin marketplace update claude-config 2>$null | Out-Null
+    foreach ($p in $plugins) {
+        & claude plugin install $p --marketplace danielmtnzc-dev/claude-config 2>$null | Out-Null
+        & claude plugin update "$p@claude-config" 2>$null | Out-Null
+        Write-Host "Plugin ${p}: instalado o actualizado."
     }
 } else {
-    [IO.File]::WriteAllText($settings, "{`r`n  `"model`": `"sonnet`"`r`n}`r`n", $utf8)
-    Write-Host 'settings.json creado con modelo sonnet.'
+    Write-Host 'No se encuentra el comando claude: instala los plugins reparto y panel-agentes'
+    Write-Host 'desde la app (+ junto al mensaje -> Plugins -> marketplace danielmtnzc-dev/claude-config).'
 }
 
-Write-Host "Listo. Instalado en $dst. Abre una sesion nueva de Claude Code."
+Write-Host 'Listo. Abre una sesion nueva de Claude Code.'

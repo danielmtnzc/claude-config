@@ -1,0 +1,10 @@
+{
+  "nota": "Dólares por millón de tokens, precios de la API (noviembre de 2026). Se usan solo para estimar y comparar consumo. Si cambian, edita estos valores y actualiza el plugin. Los de caché de Haiku y Fable son aproximados (1,25x y 0,1x la entrada).",
+  "modelos": {
+    "opus":   { "entrada": 4.0,  "salida": 20.0, "cache_escritura": 5.0,   "cache_lectura": 0.20 },
+    "sonnet": { "entrada": 2.0,  "salida": 10.0, "cache_escritura": 2.50,  "cache_lectura": 0.10 },
+    "haiku":  { "entrada": 0.10, "salida": 0.50, "cache_escritura": 0.125, "cache_lectura": 0.01 },
+    "fable":  { "entrada": 10.0, "salida": 50.0, "cache_escritura": 12.50, "cache_lectura": 1.0 },
+    "mythos": { "entrada": 10.0, "salida": 50.0, "cache_escritura": 12.50, "cache_lectura": 1.0 }
+  }
+}

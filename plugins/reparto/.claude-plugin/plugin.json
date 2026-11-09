@@ -1,0 +1,6 @@
+{
+  "name": "reparto",
+  "version": "0.1.0",
+  "description": "Reparto del trabajo para gastar poco uso: Sonnet trabaja, rapido (Haiku) hace búsquedas y cambios mecánicos y experto (Opus) diagnostica y planifica. Incluye las reglas, Sonnet por defecto y la verificación de Flutter.",
+  "types": "./types/index.d.ts"
+}

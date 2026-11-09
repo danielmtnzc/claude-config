@@ -1,10 +1,22 @@
 import { atom, read, update } from 'claude-code'
-import type { ElementConstructor, Register, SvgProps } from 'claude-code'
+import type { ElementConstructor, EngineInterface, Register, SvgProps } from 'claude-code'
 
-import type { AgentRow, AgentStep, PlanState } from '../types'
+import type { AgentRow, AgentStep, Limites, PeriodoConsumo, PlanState, ResumenConsumo } from '../types'
+import {
+  CABECERA,
+  costeDe,
+  dinero,
+  fechaLocal,
+  lineaCsv,
+  mesesRecientes,
+  resumir,
+} from './consumo'
+import type { Precios, Tokens } from './consumo'
 
 const PANE = 'panel-agentes'
 const TITLE = 'Agentes'
+const PANE_CONSUMO = 'panel-consumo'
+const TITLE_CONSUMO = 'Consumo'
 const MAX_STEPS = 40
 const STEPS_SHOWN = 5
 
@@ -22,6 +34,18 @@ const plan = atom(
   { shape: 'plan-1' },
 )
 const lastPrompt = atom({ plugin: 'panel-agentes', key: 'lastPrompt' } as const, '')
+const limites = atom({ plugin: 'panel-agentes', key: 'limites' } as const, {}, {
+  shape: 'limites-1',
+})
+const resumen = atom({ plugin: 'panel-agentes', key: 'resumen' } as const, null, {
+  shape: 'resumen-1',
+})
+
+// Estado del registro de consumo (se recalcula en cada carga del módulo).
+let precios: Precios = {}
+let offsetMin = -new Date().getTimezoneOffset()
+let carpeta: string | undefined
+let cola: Promise<void> = Promise.resolve()
 
 // ---------- colores ----------
 
@@ -143,6 +167,165 @@ function toggle(list: string[], id: string): string[] {
   return list.includes(id) ? list.filter(x => x !== id) : [...list, id]
 }
 
+// ---------- consumo ----------
+
+function porcentaje(n: number | undefined): string {
+  return n === undefined ? '?' : `${Math.round(n)}%`
+}
+
+/** Carpeta del registro: ~/.claude/consumo (en Windows, %USERPROFILE%\.claude\consumo). */
+async function carpetaConsumo($: EngineInterface): Promise<string> {
+  if (carpeta !== undefined) return carpeta
+  const isWindows = (await $.env.get('OS')) === 'Windows_NT'
+  const home = isWindows
+    ? ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')))
+    : ((await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')))
+  const sep = isWindows ? '\\' : '/'
+  carpeta = `${home ?? '.'}${sep}.claude${sep}consumo`
+
+  return carpeta
+}
+
+function rutaMes(dir: string, mes: string): string {
+  const sep = dir.includes('\\') ? '\\' : '/'
+
+  return `${dir}${sep}consumo-${mes}.csv`
+}
+
+/** Desfase horario local, para agrupar por día con la hora de aquí. */
+async function detectarOffset($: EngineInterface): Promise<void> {
+  try {
+    if ((await $.env.get('OS')) === 'Windows_NT') {
+      const r = await $.process.run(
+        ['powershell', '-NoProfile', '-Command', '[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes'],
+        { timeoutMs: 20_000 },
+      )
+      const n = Number.parseInt(r.stdout.trim(), 10)
+      if (Number.isFinite(n)) offsetMin = n
+    } else {
+      const r = await $.process.run(['date', '+%z'], { timeoutMs: 5_000 })
+      const m = /^([+-])(\d{2})(\d{2})/.exec(r.stdout.trim())
+      if (m) offsetMin = (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]))
+    }
+  } catch {
+    // Se queda con el desfase que da el propio entorno.
+  }
+}
+
+async function cargarPrecios($: EngineInterface): Promise<void> {
+  try {
+    const sep = $.plugin.root.includes('\\') ? '\\' : '/'
+    const text = (await $.fs.read(`${$.plugin.root}${sep}precios.json`)) as string
+    const json = JSON.parse(text) as { modelos?: Precios }
+    precios = json.modelos ?? {}
+  } catch {
+    precios = {}
+  }
+}
+
+/** Añade una línea al CSV del mes. Va en cola para no pisar escrituras. */
+function anotar($: EngineInterface, mes: string, linea: string): Promise<void> {
+  cola = cola
+    .then(async () => {
+      const path = rutaMes(await carpetaConsumo($), mes)
+      let previo = (await $.fs.exists(path)) ? ((await $.fs.read(path)) as string) : ''
+      if (previo === '') previo = `\uFEFF${CABECERA}\n`
+      if (!previo.endsWith('\n')) previo += '\n'
+      await $.fs.write(path, `${previo}${linea}\n`)
+    })
+    .catch(() => {
+      // Si no se puede escribir, no se interrumpe nada.
+    })
+
+  return cola
+}
+
+async function leerLimites($: EngineInterface): Promise<void> {
+  try {
+    const u = await $.session.usage()
+    const semana = u.rateLimits.find(r => r.kind === 'seven_day')
+    const cinco = u.rateLimits.find(r => r.kind === 'five_hour')
+    if (!semana && !cinco) return
+    await update($, limites, prev => ({
+      semana: semana?.percentUsed ?? prev.semana,
+      semanaReinicio: semana?.resetsAt ?? prev.semanaReinicio,
+      cincoHoras: cinco?.percentUsed ?? prev.cincoHoras,
+    }))
+  } catch {
+    // Sin datos de límites (por ejemplo, con clave de API).
+  }
+}
+
+async function calcularResumen($: EngineInterface): Promise<void> {
+  const dir = await carpetaConsumo($)
+  const t = await $.clock.now()
+  const textos: string[] = []
+  for (const mes of mesesRecientes(t, offsetMin)) {
+    const path = rutaMes(dir, mes)
+    try {
+      if (await $.fs.exists(path)) textos.push((await $.fs.read(path)) as string)
+    } catch {
+      // Un archivo ilegible no impide ver el resto.
+    }
+  }
+  const r = resumir(textos, t, offsetMin)
+  const nuevo: ResumenConsumo = { ...r, carpeta: dir, calculado: t }
+  await update($, resumen, () => nuevo)
+}
+
+/** Registra lo que costó un turno (de la sesión principal o de un subagente). */
+async function registrar($: EngineInterface, agentId: string | undefined, u: Tokens & { model: string }): Promise<void> {
+  if (agentId === undefined) await leerLimites($)
+  const tokens: Tokens = {
+    input_tokens: u.input_tokens,
+    output_tokens: u.output_tokens,
+    cache_creation_input_tokens: u.cache_creation_input_tokens,
+    cache_read_input_tokens: u.cache_read_input_tokens,
+  }
+  const coste = costeDe(u.model, tokens, precios)
+  let agente = 'principal'
+  if (agentId !== undefined) {
+    const fila = (await read($, agents)).find(a => a.id === agentId)
+    agente = fila?.type ?? 'subagente'
+    if (fila && coste !== undefined) {
+      await update($, agents, list =>
+        list.map(a => (a.id === agentId ? { ...a, costUsd: (a.costUsd ?? 0) + coste } : a)),
+      )
+    }
+  }
+
+  const t = await $.clock.now()
+  const { fecha, hora, mes } = fechaLocal(t, offsetMin)
+  const equipo = (await $.env.get('COMPUTERNAME')) ?? (await $.env.get('HOSTNAME')) ?? ''
+  const proyecto = base(await $.session.root())
+  const lim = await read($, limites)
+  await anotar(
+    $,
+    mes,
+    lineaCsv({ fecha, hora, equipo, proyecto, agente, modelo: u.model, tokens, coste, limite: lim.semana }),
+  )
+}
+
+function reparto(p: PeriodoConsumo): string {
+  const nombres: Record<string, string> = {
+    principal: 'principal',
+    rapido: 'rápido',
+    experto: 'experto',
+    otros: 'otros',
+  }
+
+  return ['principal', 'rapido', 'experto', 'otros']
+    .filter(k => (p.porAgente[k] ?? 0) > 0)
+    .map(k => `${nombres[k]} ${dinero(p.porAgente[k] ?? 0)}`)
+    .join(' · ')
+}
+
+function lineaLimites(l: Limites): string | undefined {
+  if (l.semana === undefined && l.cincoHoras === undefined) return undefined
+
+  return `Límite semanal ${porcentaje(l.semana)} · 5 horas ${porcentaje(l.cincoHoras)}`
+}
+
 // ---------- dibujos (solo en escritorio, web y móvil) ----------
 
 function ringSvg(done: number, going: number): string {
@@ -201,7 +384,13 @@ export const register: Register = on => {
       name: 'agentes',
       description: 'Abre el panel que muestra qué hace cada agente',
     })
+    await $.command.register({
+      name: 'consumo',
+      description: 'Abre el panel con el consumo estimado por día y por semana',
+    })
     void $.ui.open({ id: PANE, title: TITLE })
+    void cargarPrecios($)
+    void detectarOffset($)
 
     // Reloj del panel: solo escribe mientras algún agente está trabajando.
     $.clock.every(1000, () => {
@@ -222,6 +411,13 @@ export const register: Register = on => {
     return { text: 'Panel de agentes abierto.' }
   })
 
+  on('command.run', { command: 'consumo' }, async $ => {
+    await calcularResumen($)
+    await $.ui.open({ id: PANE_CONSUMO, title: TITLE_CONSUMO })
+
+    return { text: 'Panel de consumo abierto.' }
+  })
+
   // Lo que escribe la persona: da título al plan que venga después.
   on('prompt.submit', async ($, e, next) => {
     if (!e.command && !e.isMeta && e.text.trim()) {
@@ -240,7 +436,8 @@ export const register: Register = on => {
     const row: AgentRow = {
       id: r.agentId,
       toolUseId: e.tool_use_id,
-      type: e.subagentType,
+      // Los agentes de un plugin llegan como "reparto:rapido": se muestra "rapido".
+      type: e.subagentType.replace(/^[^:]+:/, ''),
       model: shortModel(r.model),
       description: cut(e.description, 80),
       status: 'trabajando',
@@ -327,9 +524,12 @@ export const register: Register = on => {
     return ran
   })
 
-  // Final de cada agente (primer plano o segundo plano), con su respuesta.
+  // Final de cada agente (primer plano o segundo plano), con su respuesta, y
+  // registro de consumo: cada turno de la sesión principal y cada subagente
+  // dejan una línea en ~/.claude/consumo/consumo-AAAA-MM.csv. No pasa por el modelo.
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
+    if (e.usage) await registrar($, e.agentId, e.usage)
     if (!e.agentId) return r
     const id = e.agentId
     const failed = e.reason !== 'answer'
@@ -382,6 +582,7 @@ export const register: Register = on => {
     const opened = await read($, open)
     const fully = await read($, full)
     const p = await read($, plan)
+    const lim = lineaLimites(await read($, limites))
     const width = Math.max(24, e.props.bodyColumns ?? 40)
 
     const running = list.filter(a => a.status === 'trabajando')
@@ -407,6 +608,12 @@ export const register: Register = on => {
     }
     const todo = (id: string) => () => {
       void update($, full, l => toggle(l, id))
+    }
+    const consumo = () => {
+      void (async () => {
+        await calcularResumen($)
+        await $.ui.open({ id: PANE_CONSUMO, title: TITLE_CONSUMO })
+      })()
     }
     const limpiar = () => {
       void update($, agents, l => l.filter(a => a.status === 'trabajando'))
@@ -598,7 +805,7 @@ export const register: Register = on => {
               </Button>
             </Box>
             <Text color={failed ? 'error' : C.dim} tabular>
-              {`${failed ? '✗' : '✓'} ${clock((a.endedAt ?? a.startedAt) - a.startedAt)} · ${a.actions} acc.`}
+              {`${failed ? '✗' : '✓'} ${clock((a.endedAt ?? a.startedAt) - a.startedAt)} · ${a.actions} acc.${a.costUsd !== undefined ? ` · ${dinero(a.costUsd)}` : ''}`}
             </Text>
           </Box>
 
@@ -692,10 +899,20 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" width={width}>
         {header}
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text size="caption" color={C.dim}>
+            {lim ?? ''}
+          </Text>
+          <Button key="consumo" plain onPress={consumo}>
+            <Text size="caption" color={C.link}>
+              ver consumo
+            </Text>
+          </Button>
+        </Box>
         {list.length === 0 && parts.length < 2 && (
           <Box flexDirection="column" marginTop={1}>
             <Text color={C.dim}>Ningún agente todavía.</Text>
-            <Text color={C.dim}>Cuando el coordinador delegue una tarea, aparecerá aquí.</Text>
+            <Text color={C.dim}>Cuando se delegue una tarea, aparecerá aquí.</Text>
           </Box>
         )}
         {planBox && <Box marginTop={1}>{planBox}</Box>}
@@ -706,6 +923,98 @@ export const register: Register = on => {
         {rows}
         {done.length > 15 && <Text color={C.dim}>{`… y ${done.length - 15} más`}</Text>}
         {foot}
+      </Box>
+    )
+  })
+
+  // ---------- el panel de consumo ----------
+
+  on('ui.render', { component: 'Pane', requestId: PANE_CONSUMO }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const r = await read($, resumen)
+    const lim = await read($, limites)
+    const width = Math.max(24, e.props.bodyColumns ?? 40)
+
+    const actualizar = () => {
+      void calcularResumen($)
+    }
+
+    const section = (label: string) => (
+      <Box marginTop={1}>
+        <Text size="caption" color={C.dim} weight="semibold">
+          {label.toUpperCase()}
+        </Text>
+      </Box>
+    )
+
+    const periodo = (p: PeriodoConsumo, key: string, mostrarLimite: boolean) => (
+      <Box key={key} flexDirection="column" marginTop={1}>
+        <Text>
+          <Text>{`${p.etiqueta}  `}</Text>
+          <Text weight="bold">{dinero(p.total)}</Text>
+          <Text color={C.dim}>
+            {`${p.total > 0 ? ` · Opus ${Math.round((p.opus / p.total) * 100)}%` : ''}${
+              mostrarLimite && p.limiteMax !== undefined ? ` · límite ${Math.round(p.limiteMax)}%` : ''
+            }`}
+          </Text>
+        </Text>
+        <Text color={C.dim} size="caption">
+          {reparto(p)}
+        </Text>
+      </Box>
+    )
+
+    const reinicio = lim.semanaReinicio ? fechaLocal(Date.parse(lim.semanaReinicio), offsetMin) : undefined
+
+    return (
+      <Box flexDirection="column" width={width}>
+        <Text weight="bold" size="heading">
+          Consumo
+        </Text>
+
+        {lim.semana !== undefined && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text>
+              <Text>Límite semanal: </Text>
+              <Text weight="bold">{porcentaje(lim.semana)}</Text>
+              <Text color={C.dim}>
+                {reinicio
+                  ? ` (se reinicia ${reinicio.fecha.slice(8, 10)}/${reinicio.fecha.slice(5, 7)} ${reinicio.hora})`
+                  : ''}
+              </Text>
+            </Text>
+            {lim.cincoHoras !== undefined && (
+              <Text color={C.dim}>{`Límite de 5 horas: ${porcentaje(lim.cincoHoras)}`}</Text>
+            )}
+          </Box>
+        )}
+
+        {r === null && <Text color={C.dim}>Calculando…</Text>}
+
+        {r !== null && r.dias.length === 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={C.dim}>Todavía no hay consumo registrado.</Text>
+            <Text color={C.dim}>Se apunta solo al terminar cada respuesta y cada subagente.</Text>
+          </Box>
+        )}
+
+        {r !== null && r.dias.length > 0 && section('Últimos 14 días')}
+        {r !== null && r.dias.map((p, i) => periodo(p, 'd-' + i, false))}
+
+        {r !== null && r.semanas.length > 0 && section('Últimas 8 semanas')}
+        {r !== null && r.semanas.map((p, i) => periodo(p, 's-' + i, true))}
+
+        {r !== null && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={C.dim} size="caption">
+              Coste estimado con precios de la API: sirve para comparar, no es lo que pagas.
+            </Text>
+            <Text color={C.dim} size="caption">{`Archivos: ${r.carpeta}`}</Text>
+            <Button key="actualizar" plain onPress={actualizar}>
+              <Text color={C.link}>actualizar</Text>
+            </Button>
+          </Box>
+        )}
       </Box>
     )
   })

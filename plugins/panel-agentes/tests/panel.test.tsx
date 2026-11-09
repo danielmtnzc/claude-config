@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import { expect, mock, test } from 'claude-code/testing'
 
 const PANE = {
   plugin: 'panel-agentes',
@@ -112,6 +113,147 @@ test('las tareas del coordinador forman el plan', async ($, on) => {
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Text', text: /1 \/ 2 partes/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+const CONSUMO = { ...PANE, requestId: 'panel-consumo', props: { ...PANE.props, title: 'Consumo' } } as const
+
+// 9 de noviembre de 2026, 10:30 UTC (un lunes).
+const AHORA = Date.UTC(2026, 10, 9, 10, 30)
+
+const PRECIOS = JSON.stringify({
+  modelos: {
+    opus: { entrada: 4, salida: 20, cache_escritura: 5, cache_lectura: 0.2 },
+    sonnet: { entrada: 2, salida: 10, cache_escritura: 2.5, cache_lectura: 0.1 },
+    haiku: { entrada: 0.1, salida: 0.5, cache_escritura: 0.125, cache_lectura: 0.01 },
+  },
+})
+
+/** Un sistema de archivos en memoria y lo que hace falta para arrancar la sesión. */
+function mundo(on: On, archivos: Record<string, string> = {}) {
+  const fs: Record<string, string> = { ...archivos }
+  mock.env(on, { OS: 'Linux', HOME: '/home/dani', HOSTNAME: 'portatil' })
+  on('clock.now', () => ({ value: AHORA }))
+  on('clock.every', () => ({ value: undefined }))
+  on('command.register', (_, e) => ({ value: { command: (e as { name: string }).name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.root', () => ({ value: '/proyectos/mi-app' }))
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { window: 1_000_000 },
+      rateLimits: [
+        { kind: 'seven_day', percentUsed: 42.5, resetsAt: '2026-11-12T08:00:00Z' },
+        { kind: 'five_hour', percentUsed: 12 },
+      ],
+    },
+  }))
+  // Desfase horario: UTC+1.
+  on('process.run', () => ({
+    value: { exitCode: 0, stdout: '+0100\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('fs.exists', (_, e) => ({ value: e.path in fs }))
+  on('fs.read', (_, e) => {
+    if (e.path.endsWith('precios.json')) return { value: PRECIOS }
+    const text = fs[e.path]
+    if (text === undefined) throw new Error('ENOENT')
+
+    return { value: text }
+  })
+  on('fs.write', (_, e) => {
+    fs[e.path] = e.text
+
+    return { value: undefined }
+  })
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+
+  return fs
+}
+
+const TOKENS = { input_tokens: 1_000, output_tokens: 2_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 100_000 }
+
+test('cada turno deja una línea en el CSV del mes, con coste y límite', async ($, on) => {
+  const fs = mundo(on)
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'ag-9' }))
+  await $.session.start({ cwd: '/proyectos/mi-app', surface: 'desktop', isInteractive: true })
+
+  // Turno de la sesión principal (Sonnet).
+  await $.turn.complete({
+    answer: 'hecho', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer',
+    usage: { ...TOKENS, model: 'claude-sonnet-5-5' },
+  })
+  // Un experto (Opus) que termina.
+  await $.agent.spawn({ prompt: 'Diagnostica', description: 'Diagnóstico', subagentType: 'reparto:experto' } as never)
+  await $.turn.complete({
+    answer: 'plan', durationMs: 10, isAborted: false, turnId: 't2', reason: 'answer', agentId: 'ag-9',
+    usage: { ...TOKENS, model: 'claude-opus-5-5' },
+  })
+
+  const csv = fs['/home/dani/.claude/consumo/consumo-2026-11.csv']
+  expect(csv).toBeDefined()
+  const lineas = (csv ?? '').replace(/^﻿/, '').trim().split('\n')
+  expect(lineas[0]).toBe(
+    'fecha;hora;equipo;proyecto;agente;modelo;entrada;salida;cache_escritura;cache_lectura;coste_usd;limite_semanal_pct',
+  )
+  // Sonnet: 1000*2 + 2000*10 + 100000*0,1 = 32000 / 1e6 = 0,032 $; hora local UTC+1.
+  expect(lineas[1]).toBe('2026-11-09;11:30;portatil;mi-app;principal;claude-sonnet-5-5;1000;2000;0;100000;0,0320;42,5')
+  // Opus: 1000*4 + 2000*20 + 100000*0,2 = 64000 / 1e6 = 0,064 $.
+  expect(lineas[2]).toBe('2026-11-09;11:30;portatil;mi-app;experto;claude-opus-5-5;1000;2000;0;100000;0,0640;42,5')
+
+  // El panel muestra el límite y lo que costó el experto.
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ type: 'Text', text: /Límite semanal 43% · 5 horas 12%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /0,06 \$/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('/consumo resume por día y semana, con el límite semanal', async ($, on) => {
+  const previo = [
+    '﻿fecha;hora;equipo;proyecto;agente;modelo;entrada;salida;cache_escritura;cache_lectura;coste_usd;limite_semanal_pct',
+    '2026-11-03;10:00;p;a;principal;claude-sonnet-5-5;1;1;0;0;1,5000;30,0',
+    '2026-11-03;11:00;p;a;experto;claude-opus-5-5;1;1;0;0;0,5000;31,0',
+    '2026-11-04;09:00;p;a;rapido;claude-haiku-5-5;1;1;0;0;0,0200;33,0',
+    '2026-11-09;09:00;p;a;principal;claude-sonnet-5-5;1;1;0;0;2,0000;40,0',
+    '',
+  ].join('\n')
+  mundo(on, { '/home/dani/.claude/consumo/consumo-2026-11.csv': previo })
+  await $.session.start({ cwd: '/proyectos/mi-app', surface: 'desktop', isInteractive: true })
+  // Un turno para conocer los límites.
+  await $.turn.complete({
+    answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer',
+    usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, model: 'claude-sonnet-5-5' },
+  })
+
+  const r = await $.command.run({ command: 'consumo' } as never)
+  expect(r.text).toBe('Panel de consumo abierto.')
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...CONSUMO, surface })
+    expect(await ui.find({ type: 'Text', text: /Límite semanal: 43%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /se reinicia 12\/11 09:00/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /lu 09\/11\s+2,00 \$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /ma 03\/11\s+2,00 \$ · Opus 25%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /principal 1,50 \$ · experto 0,50 \$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /sem\. 09\/11\s+2,00 \$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /sem\. 02\/11\s+2,02 \$ · Opus 25% · límite 33%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /principal 1,50 \$ · rápido 0,02 \$ · experto 0,50 \$/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('los agentes de un plugin se muestran sin el prefijo', async ($, on) => {
+  on('clock.now', () => ({ value: 1_000 }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'ag-1' }))
+  await $.agent.spawn({ ...(SPAWN as object), subagentType: 'reparto:rapido' } as never)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ type: 'Text', text: /^rapido$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /reparto:/ })).toBeUndefined()
     await ui.unmount()
   }
 })

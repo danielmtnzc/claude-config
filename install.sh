@@ -1,43 +1,50 @@
 #!/usr/bin/env bash
-# Instala esta configuracion en ~/.claude (Mac/Linux).
-# Se puede ejecutar varias veces: actualiza lo instalado sin borrar lo demas.
+# Instala la configuracion de Claude Code (Mac/Linux): los plugins reparto y
+# panel-agentes, y quita lo que instalaban las versiones anteriores en ~/.claude.
+# Se puede ejecutar varias veces.
 # Uso: bash install.sh
 set -euo pipefail
-src="$(cd "$(dirname "$0")" && pwd)"
 dst="$HOME/.claude"
-mkdir -p "$dst/agents"
 
-cp "$src"/agents/*.md "$dst/agents/"
-echo "Agentes copiados."
-
-python3 - "$src" "$dst" <<'PY'
-import json, os, re, shutil, sys
-src, dst = sys.argv[1], sys.argv[2]
+# 1. Limpieza de la instalacion antigua (ahora todo va en el plugin reparto)
+for old in rapido.md normal.md experto.md; do
+  if [ -f "$dst/agents/$old" ]; then rm -f "$dst/agents/$old"; echo "Agente antiguo quitado de ~/.claude: $old"; fi
+done
+if [ -f "$dst/CLAUDE.md" ]; then
+python3 - "$dst/CLAUDE.md" <<'PY'
+import os, re, shutil, sys
+path = sys.argv[1]
 start, end = "<!-- claude-config:inicio -->", "<!-- claude-config:fin -->"
-rules = open(os.path.join(src, "CLAUDE.md"), encoding="utf-8").read().strip()
-block = f"{start}\n{rules}\n{end}"
-path = os.path.join(dst, "CLAUDE.md")
-if os.path.exists(path):
+cur = open(path, encoding="utf-8").read()
+pat = r"\s*" + re.escape(start) + r"[\s\S]*?" + re.escape(end) + r"\s*"
+if re.search(pat, cur):
     shutil.copy(path, path + ".bak")
-    cur = open(path, encoding="utf-8").read()
-    pat = re.escape(start) + r"[\s\S]*?" + re.escape(end)
-    new = re.sub(pat, lambda m: block, cur) if re.search(pat, cur) else cur.rstrip() + "\n\n" + block + "\n"
-    print("CLAUDE.md actualizado (copia anterior en CLAUDE.md.bak).")
-else:
-    new = block + "\n"
-    print("CLAUDE.md creado.")
-open(path, "w", encoding="utf-8").write(new)
-
-sp = os.path.join(dst, "settings.json")
-data = json.load(open(sp, encoding="utf-8")) if os.path.exists(sp) else {}
-if "model" in data:
-    print(f"settings.json: ya tenias un modelo ({data['model']}), no se cambia.")
-else:
-    if os.path.exists(sp):
-        shutil.copy(sp, sp + ".bak")
-    data["model"] = "sonnet"
-    json.dump(data, open(sp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
-    print("settings.json: modelo por defecto -> sonnet.")
+    new = re.sub(pat, "\n\n", cur).strip()
+    if new == "":
+        os.remove(path)
+        print("Reglas antiguas quitadas de ~/.claude/CLAUDE.md (copia en CLAUDE.md.bak).")
+    else:
+        open(path, "w", encoding="utf-8").write(new + "\n")
+        print("Reglas antiguas quitadas de ~/.claude/CLAUDE.md; tu contenido se conserva (copia en CLAUDE.md.bak).")
 PY
+fi
 
-echo "Listo. Instalado en $dst. Abre una sesion nueva de Claude Code."
+# 2. Plugins
+if command -v claude >/dev/null 2>&1; then
+  # Si el marketplace se anadio desde el repositorio antiguo (sin -dev), se cambia por el nuevo.
+  if claude plugin marketplace list 2>/dev/null | grep -q 'danielmtnzc/claude-config'; then
+    claude plugin marketplace remove claude-config >/dev/null 2>&1 || true
+    echo "Marketplace antiguo (danielmtnzc/claude-config) sustituido por danielmtnzc-dev/claude-config."
+  fi
+  claude plugin marketplace update claude-config >/dev/null 2>&1 || true
+  for p in reparto panel-agentes; do
+    claude plugin install "$p" --marketplace danielmtnzc-dev/claude-config >/dev/null 2>&1 || true
+    claude plugin update "$p@claude-config" >/dev/null 2>&1 || true
+    echo "Plugin $p: instalado o actualizado."
+  done
+else
+  echo "No se encuentra el comando claude: instala los plugins reparto y panel-agentes"
+  echo "desde la app (+ junto al mensaje -> Plugins -> marketplace danielmtnzc-dev/claude-config)."
+fi
+
+echo "Listo. Abre una sesion nueva de Claude Code."
