@@ -1,14 +1,16 @@
 import { atom, read, update } from 'claude-code'
 import type { ElementConstructor, EngineInterface, Register, SvgProps } from 'claude-code'
 
-import type { AgentRow, AgentStep, Limites, PeriodoConsumo, PlanState, ResumenConsumo } from '../types'
+import type { AgentRow, AgentStep, Instantanea, Limites, PeriodoConsumo, PlanState, PrincipalState, ResumenConsumo } from '../types'
 import {
   CABECERA,
   costeDe,
-  dinero,
+  costeDesde,
   fechaLocal,
   lineaCsv,
   mesesRecientes,
+  pctTexto,
+  repartoPct,
   resumir,
 } from './consumo'
 import type { Precios, Tokens } from './consumo'
@@ -37,6 +39,11 @@ const lastPrompt = atom({ plugin: 'panel-agentes', key: 'lastPrompt' } as const,
 const limites = atom({ plugin: 'panel-agentes', key: 'limites' } as const, {}, {
   shape: 'limites-1',
 })
+const principal = atom(
+  { plugin: 'panel-agentes', key: 'principal' } as const,
+  { costes: {}, turnos: 0 },
+  { shape: 'principal-1' },
+)
 const resumen = atom({ plugin: 'panel-agentes', key: 'resumen' } as const, null, {
   shape: 'resumen-1',
 })
@@ -294,6 +301,15 @@ async function registrar($: EngineInterface, agentId: string | undefined, u: Tok
     }
   }
 
+  else {
+    // La sesión principal (la que escribe el usuario) también gasta.
+    const m = shortModel(u.model)
+    await update($, principal, p => ({
+      costes: { ...p.costes, [m]: (p.costes[m] ?? 0) + (coste ?? 0) },
+      turnos: p.turnos + 1,
+    }))
+  }
+
   const t = await $.clock.now()
   const { fecha, hora, mes } = fechaLocal(t, offsetMin)
   const equipo = (await $.env.get('COMPUTERNAME')) ?? (await $.env.get('HOSTNAME')) ?? ''
@@ -304,6 +320,102 @@ async function registrar($: EngineInterface, agentId: string | undefined, u: Tok
     mes,
     lineaCsv({ fecha, hora, equipo, proyecto, agente, modelo: u.model, tokens, coste, limite: lim.semana }),
   )
+  if (agentId === undefined) await calibrar($, lim, t)
+  await guardar($)
+}
+
+/**
+ * Cuántos puntos del límite semanal cuesta cada dólar estimado: el porcentaje
+ * semanal actual entre lo registrado desde que empezó la semana. Con eso se
+ * convierte en porcentaje lo que gasta cada agente.
+ */
+async function calibrar($: EngineInterface, lim: Limites, t: number): Promise<void> {
+  try {
+    if (!lim.semana || lim.semana <= 0) return
+    const inicio = lim.semanaReinicio ? Date.parse(lim.semanaReinicio) - 7 * 86_400_000 : t - 7 * 86_400_000
+    const desde = fechaLocal(inicio, offsetMin)
+    const meses = new Set([desde.mes, fechaLocal(t, offsetMin).mes])
+    const dir = await carpetaConsumo($)
+    const textos: string[] = []
+    for (const mes of meses) {
+      const path = rutaMes(dir, mes)
+      if (await $.fs.exists(path)) textos.push((await $.fs.read(path)) as string)
+    }
+    const coste = costeDesde(textos, `${desde.fecha} ${desde.hora}`)
+    // Con muy poco coste registrado el cociente no es fiable: se queda el anterior.
+    if (coste < 0.3) return
+    const factor = lim.semana / coste
+    await update($, limites, prev => ({ ...prev, pctPorDolar: factor }))
+  } catch {
+    // Sin calibrar, el panel simplemente no muestra porcentajes por agente.
+  }
+}
+
+/** Porcentaje del límite semanal que se lleva un coste estimado; undefined si aún no se sabe. */
+function pctDeCoste(coste: number | undefined, l: Limites): string | undefined {
+  if (coste === undefined || l.pctPorDolar === undefined) return undefined
+
+  return `≈${pctTexto(coste * l.pctPorDolar)}`
+}
+
+// ---------- recuperar lo de cada chat ----------
+
+const MAX_SESIONES = 30
+
+function instantanea(a: AgentRow[], plan: PlanState, principal: PrincipalState, lastPrompt: string): Instantanea {
+  return {
+    // Lo justo para volver a ver la lista: sin las acciones más viejas.
+    agents: a.slice(-40).map(x => ({ ...x, steps: x.steps.slice(-12) })),
+    plan,
+    principal,
+    lastPrompt,
+  }
+}
+
+/** Guarda la lista de agentes y el plan de este chat, para verlos al volver a abrirlo. */
+async function guardar($: EngineInterface, sessionId?: string): Promise<void> {
+  try {
+    const id = sessionId ?? (await $.session.id())
+    const snap = instantanea(await read($, agents), await read($, plan), await read($, principal), await read($, lastPrompt))
+    if (snap.agents.length === 0 && snap.plan.parts.length === 0 && snap.principal.turnos === 0) return
+    await $.store.set(`chat:${id}`, snap)
+    const indice = ((await $.store.get('indice')) as string[] | undefined) ?? []
+    const nuevo = [...indice.filter(x => x !== id), id]
+    for (const viejo of nuevo.slice(0, Math.max(0, nuevo.length - MAX_SESIONES))) await $.store.delete(`chat:${viejo}`)
+    await $.store.set('indice', nuevo.slice(-MAX_SESIONES))
+  } catch {
+    // Si no se puede guardar, el panel sigue funcionando.
+  }
+}
+
+/** Vacía el panel (un /clear empieza un chat nuevo en el mismo proceso). */
+async function vaciar($: EngineInterface): Promise<void> {
+  await update($, agents, () => [])
+  await update($, open, () => [])
+  await update($, full, () => [])
+  await update($, plan, () => ({ title: '', parts: [] }))
+  await update($, principal, () => ({ costes: {}, turnos: 0 }))
+  await update($, lastPrompt, () => '')
+}
+
+/** Al abrir un chat ya existente, recupera lo que se guardó de él. */
+async function restaurar($: EngineInterface): Promise<void> {
+  try {
+    const actual = await read($, agents)
+    const turnos = (await read($, principal)).turnos
+    if (actual.length > 0 || turnos > 0) return
+    const snap = (await $.store.get(`chat:${await $.session.id()}`)) as Instantanea | undefined
+    if (!snap) return
+    await update($, agents, () =>
+      // Lo que seguía "trabajando" cuando se cerró ya no está trabajando.
+      snap.agents.map(a => (a.status === 'trabajando' ? { ...a, status: 'terminado' as const, activity: '' } : a)),
+    )
+    await update($, plan, () => snap.plan)
+    await update($, principal, () => snap.principal)
+    await update($, lastPrompt, () => snap.lastPrompt)
+  } catch {
+    // Sin nada que recuperar.
+  }
 }
 
 function reparto(p: PeriodoConsumo): string {
@@ -316,7 +428,7 @@ function reparto(p: PeriodoConsumo): string {
 
   return ['principal', 'rapido', 'experto', 'otros']
     .filter(k => (p.porAgente[k] ?? 0) > 0)
-    .map(k => `${nombres[k]} ${dinero(p.porAgente[k] ?? 0)}`)
+    .map(k => `${nombres[k]} ${pctTexto(repartoPct(p, k))}`)
     .join(' · ')
 }
 
@@ -391,6 +503,8 @@ export const register: Register = on => {
     void $.ui.open({ id: PANE, title: TITLE })
     void cargarPrecios($)
     void detectarOffset($)
+    void restaurar($)
+    void leerLimites($)
 
     // Reloj del panel: solo escribe mientras algún agente está trabajando.
     $.clock.every(1000, () => {
@@ -401,6 +515,15 @@ export const register: Register = on => {
         await update($, now, () => t)
       })()
     })
+
+    return next(e)
+  })
+
+  // Al salir o hacer /clear, se guarda el chat que termina; y tras un /clear el
+  // panel empieza vacío para el chat nuevo, en vez de arrastrar lo del anterior.
+  on('session.end', async ($, e, next) => {
+    await guardar($, e.sessionId)
+    if (e.reason === 'clear') await vaciar($)
 
     return next(e)
   })
@@ -549,6 +672,7 @@ export const register: Register = on => {
       ),
     )
     await update($, now, () => t)
+    await guardar($)
 
     return r
   })
@@ -565,6 +689,7 @@ export const register: Register = on => {
       ),
     )
     await update($, now, () => t)
+    await guardar($)
 
     return next(e)
   })
@@ -582,7 +707,9 @@ export const register: Register = on => {
     const opened = await read($, open)
     const fully = await read($, full)
     const p = await read($, plan)
-    const lim = lineaLimites(await read($, limites))
+    const limState = await read($, limites)
+    const lim = lineaLimites(limState)
+    const princ = await read($, principal)
     const width = Math.max(24, e.props.bodyColumns ?? 40)
 
     const running = list.filter(a => a.status === 'trabajando')
@@ -743,6 +870,36 @@ export const register: Register = on => {
         </Box>
       ) : null
 
+    // --- sesión principal: el modelo que escribe el usuario, desde el principio ---
+    const modelosPrincipal = Object.keys(princ.costes).sort((x, y) => (princ.costes[y] ?? 0) - (princ.costes[x] ?? 0))
+    const costePrincipal = modelosPrincipal.reduce((sum, m) => sum + (princ.costes[m] ?? 0), 0)
+    const mainModel = modelosPrincipal[0]
+    const mainCard =
+      princ.turnos > 0 && mainModel !== undefined ? (
+        <Box
+          flexDirection="row"
+          gap={1}
+          marginTop={1}
+          borderStyle="round"
+          borderColor={look(mainModel).color}
+          paddingX={1}
+        >
+          {avatar({ model: mainModel } as AgentRow, 30)}
+          <Box flexDirection="column" flexGrow={1}>
+            <Box flexDirection="row" justifyContent="space-between">
+              <Text weight="semibold">principal</Text>
+              <Text color={C.dim}>{modelosPrincipal.map(m => look(m).name).join(' + ')}</Text>
+            </Box>
+            <Box flexDirection="row" justifyContent="space-between">
+              <Text color={C.dim} size="caption">
+                {`${princ.turnos} ${princ.turnos === 1 ? 'respuesta' : 'respuestas'}`}
+              </Text>
+              <Text weight="bold">{pctDeCoste(costePrincipal, limState) ?? ''}</Text>
+            </Box>
+          </Box>
+        </Box>
+      ) : null
+
     // --- tarjetas de los que trabajan ---
     const cards = running.map(a => {
       const l = look(a.model)
@@ -805,7 +962,7 @@ export const register: Register = on => {
               </Button>
             </Box>
             <Text color={failed ? 'error' : C.dim} tabular>
-              {`${failed ? '✗' : '✓'} ${clock((a.endedAt ?? a.startedAt) - a.startedAt)} · ${a.actions} acc.${a.costUsd !== undefined ? ` · ${dinero(a.costUsd)}` : ''}`}
+              {`${failed ? '✗' : '✓'} ${clock((a.endedAt ?? a.startedAt) - a.startedAt)} · ${a.actions} acc.${pctDeCoste(a.costUsd, limState) ? ` · ${pctDeCoste(a.costUsd, limState)}` : ''}`}
             </Text>
           </Box>
 
@@ -909,7 +1066,9 @@ export const register: Register = on => {
             </Text>
           </Button>
         </Box>
-        {list.length === 0 && parts.length < 2 && (
+        {mainCard && section('Esta sesión')}
+        {mainCard}
+        {list.length === 0 && parts.length < 2 && !mainCard && (
           <Box flexDirection="column" marginTop={1}>
             <Text color={C.dim}>Ningún agente todavía.</Text>
             <Text color={C.dim}>Cuando se delegue una tarea, aparecerá aquí.</Text>
@@ -947,14 +1106,14 @@ export const register: Register = on => {
       </Box>
     )
 
-    const periodo = (p: PeriodoConsumo, key: string, mostrarLimite: boolean) => (
+    const periodo = (p: PeriodoConsumo, key: string) => (
       <Box key={key} flexDirection="column" marginTop={1}>
         <Text>
           <Text>{`${p.etiqueta}  `}</Text>
-          <Text weight="bold">{dinero(p.total)}</Text>
+          <Text weight="bold">{pctTexto(p.pct)}</Text>
           <Text color={C.dim}>
-            {`${p.total > 0 ? ` · Opus ${Math.round((p.opus / p.total) * 100)}%` : ''}${
-              mostrarLimite && p.limiteMax !== undefined ? ` · límite ${Math.round(p.limiteMax)}%` : ''
+            {`${' del límite semanal'}${
+              p.total > 0 ? ` · Opus ${Math.round((p.opus / p.total) * 100)}%` : ''
             }`}
           </Text>
         </Text>
@@ -999,15 +1158,15 @@ export const register: Register = on => {
         )}
 
         {r !== null && r.dias.length > 0 && section('Últimos 14 días')}
-        {r !== null && r.dias.map((p, i) => periodo(p, 'd-' + i, false))}
+        {r !== null && r.dias.map((p, i) => periodo(p, 'd-' + i))}
 
         {r !== null && r.semanas.length > 0 && section('Últimas 8 semanas')}
-        {r !== null && r.semanas.map((p, i) => periodo(p, 's-' + i, true))}
+        {r !== null && r.semanas.map((p, i) => periodo(p, 's-' + i))}
 
         {r !== null && (
           <Box flexDirection="column" marginTop={1}>
             <Text color={C.dim} size="caption">
-              Coste estimado con precios de la API: sirve para comparar, no es lo que pagas.
+              Porcentaje del límite semanal; el reparto entre agentes es estimado.
             </Text>
             <Text color={C.dim} size="caption">{`Archivos: ${r.carpeta}`}</Text>
             <Button key="actualizar" plain onPress={actualizar}>

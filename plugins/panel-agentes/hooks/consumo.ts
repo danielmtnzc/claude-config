@@ -130,20 +130,54 @@ function lunes(fecha: string): string {
   return new Date(d.getTime() - back * DIA_MS).toISOString().slice(0, 10)
 }
 
-function sumar(map: Map<string, PeriodoConsumo>, clave: string, etiqueta: string, agente: string, modelo: string, coste: number, limite: number | undefined) {
+function sumar(map: Map<string, PeriodoConsumo>, clave: string, etiqueta: string, agente: string, modelo: string, coste: number, limite: number | undefined, delta: number) {
   let p = map.get(clave)
   if (!p) {
-    p = { etiqueta, total: 0, porAgente: {}, opus: 0 }
+    p = { etiqueta, total: 0, pct: 0, porAgente: {}, opus: 0 }
     map.set(clave, p)
   }
   p.total += coste
+  p.pct += delta
   const g = grupo(agente)
   p.porAgente[g] = (p.porAgente[g] ?? 0) + coste
   if (modeloCorto(modelo) === 'opus') p.opus += coste
   if (limite !== undefined) p.limiteMax = Math.max(p.limiteMax ?? 0, limite)
 }
 
-/** Resume los CSV: los últimos 14 días y las últimas 8 semanas con datos, lo más reciente primero. */
+type Fila = { fecha: string; hora: string; agente: string; modelo: string; coste: number; limite: number | undefined }
+
+function filas(textos: string[]): Fila[] {
+  const out: Fila[] = []
+  for (const texto of textos) {
+    for (const raw of texto.replace(/^﻿/, '').split(/\r?\n/)) {
+      const c = raw.split(';')
+      if (c.length < 11 || !/^\d{4}-\d{2}-\d{2}$/.test(c[0] ?? '')) continue
+      out.push({
+        fecha: c[0] as string,
+        hora: c[1] ?? '',
+        agente: c[4] ?? '',
+        modelo: c[5] ?? '',
+        coste: numero(c[10]) ?? 0,
+        limite: numero(c[11]),
+      })
+    }
+  }
+
+  return out.sort((a, b) => (`${a.fecha} ${a.hora}` < `${b.fecha} ${b.hora}` ? -1 : 1))
+}
+
+/** Coste estimado registrado desde una fecha y hora locales ("AAAA-MM-DD HH:MM"). */
+export function costeDesde(textos: string[], desde: string): number {
+  return filas(textos)
+    .filter(f => `${f.fecha} ${f.hora}` >= desde)
+    .reduce((s, f) => s + f.coste, 0)
+}
+
+/**
+ * Resume los CSV: los últimos 14 días y las últimas 8 semanas con datos, lo más reciente primero.
+ * El gasto de cada periodo es lo que subió el límite semanal (porcentaje); el coste en
+ * dólares solo sirve para repartirlo entre agentes.
+ */
 export function resumir(textos: string[], ms: number, offsetMin: number): { dias: PeriodoConsumo[]; semanas: PeriodoConsumo[] } {
   const hoy = fechaLocal(ms, offsetMin).fecha
   const desdeDia = fechaLocal(ms - 13 * DIA_MS, offsetMin).fecha
@@ -151,23 +185,24 @@ export function resumir(textos: string[], ms: number, offsetMin: number): { dias
   const dias = new Map<string, PeriodoConsumo>()
   const semanas = new Map<string, PeriodoConsumo>()
 
-  for (const texto of textos) {
-    for (const raw of texto.replace(/^﻿/, '').split(/\r?\n/)) {
-      const c = raw.split(';')
-      if (c.length < 11 || !/^\d{4}-\d{2}-\d{2}$/.test(c[0] ?? '')) continue
-      const fecha = c[0] as string
-      if (fecha > hoy) continue
-      const agente = c[4] ?? ''
-      const modelo = c[5] ?? ''
-      const coste = numero(c[10]) ?? 0
-      const limite = numero(c[11])
-      if (fecha >= desdeDia) sumar(dias, fecha, etiquetaDia(fecha), agente, modelo, coste, limite)
-      const sem = lunes(fecha)
-      if (sem >= desdeSemana) {
-        sumar(semanas, sem, `sem. ${sem.slice(8, 10)}/${sem.slice(5, 7)}`, agente, modelo, coste, limite)
-      }
+  let previo: number | undefined
+  for (const f of filas(textos)) {
+    // Cuánto subió el límite semanal con esta línea; si bajó, es que se reinició.
+    let delta = 0
+    if (f.limite !== undefined) {
+      if (previo !== undefined) delta = f.limite >= previo ? f.limite - previo : f.limite
+      previo = f.limite
+    }
+    if (f.fecha > hoy) continue
+    if (f.fecha >= desdeDia) sumar(dias, f.fecha, etiquetaDia(f.fecha), f.agente, f.modelo, f.coste, f.limite, delta)
+    const sem = lunes(f.fecha)
+    if (sem >= desdeSemana) {
+      sumar(semanas, sem, `sem. ${sem.slice(8, 10)}/${sem.slice(5, 7)}`, f.agente, f.modelo, f.coste, f.limite, delta)
     }
   }
+
+  // Una semana vale lo que marcó el límite semanal al final de ella.
+  for (const p of semanas.values()) if (p.limiteMax !== undefined) p.pct = p.limiteMax
 
   const ordenar = (m: Map<string, PeriodoConsumo>) =>
     [...m.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(([, v]) => v)
@@ -175,9 +210,15 @@ export function resumir(textos: string[], ms: number, offsetMin: number): { dias
   return { dias: ordenar(dias), semanas: ordenar(semanas) }
 }
 
-/** "1,23 $"; lo que no llega a un céntimo, "<0,01 $". */
-export function dinero(n: number): string {
-  if (n > 0 && n < 0.005) return '<0,01 $'
+/** "42%", "3,5%"; lo que no llega al 0,05%, "<0,1%". */
+export function pctTexto(n: number): string {
+  if (n > 0 && n < 0.05) return '<0,1%'
+  if (n < 10) return `${n.toFixed(1).replace('.', ',')}%`.replace(',0%', '%')
 
-  return `${n.toFixed(2).replace('.', ',')} $`
+  return `${Math.round(n)}%`
+}
+
+/** La parte de un periodo (en puntos del límite semanal) que se lleva cada agente. */
+export function repartoPct(p: PeriodoConsumo, agente: string): number {
+  return p.total > 0 ? (p.pct * (p.porAgente[agente] ?? 0)) / p.total : 0
 }

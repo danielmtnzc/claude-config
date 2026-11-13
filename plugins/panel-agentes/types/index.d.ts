@@ -34,7 +34,7 @@ export type AgentRow = {
   steps: AgentStep[]
   /** Primer párrafo de su respuesta final, si se conoce. */
   result?: string
-  /** Coste estimado en dólares, cuando ha terminado. */
+  /** Coste estimado en dólares: solo se usa para calcular su porcentaje del límite semanal. */
   costUsd?: number
 }
 
@@ -58,15 +58,35 @@ export type Limites = {
   semanaReinicio?: string
   /** Porcentaje usado del límite de 5 horas. */
   cincoHoras?: number
+  /** Puntos del límite semanal que cuesta cada dólar estimado, para convertir coste en porcentaje. */
+  pctPorDolar?: number
+}
+
+/** Lo que ha gastado en esta sesión el agente principal (el que escribe el usuario), por modelo. */
+export type PrincipalState = {
+  /** Coste estimado en dólares por modelo corto (sonnet, opus...). */
+  costes: Record<string, number>
+  /** Respuestas del agente principal. */
+  turnos: number
+}
+
+/** Lo que se guarda de cada sesión para recuperarlo al volver a abrirla. */
+export type Instantanea = {
+  agents: AgentRow[]
+  plan: PlanState
+  principal: PrincipalState
+  lastPrompt: string
 }
 
 /** Coste de un periodo (un día o una semana), por agente. */
 export type PeriodoConsumo = {
   /** Etiqueta para mostrar: "lu 09/11" o "sem. 03/11". */
   etiqueta: string
-  /** Coste total estimado en dólares. */
+  /** Coste total estimado en dólares (solo para repartir el porcentaje). */
   total: number
-  /** Coste por agente: principal, rapido, experto, otros. */
+  /** Puntos del límite semanal gastados en el periodo. */
+  pct: number
+  /** Coste (en dólares) por agente: principal, rapido, experto, otros. */
   porAgente: Record<string, number>
   /** Coste de Opus, para ver qué parte se lleva. */
   opus: number
@@ -97,6 +117,7 @@ declare module 'claude-code' {
       /** Lo último que escribió la persona, para titular el plan. */
       lastPrompt: string
       limites: Shaped<Limites>
+      principal: Shaped<PrincipalState>
       resumen: Shaped<ResumenConsumo | null>
     }
   }

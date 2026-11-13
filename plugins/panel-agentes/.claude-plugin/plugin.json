@@ -1,6 +1,6 @@
 {
   "name": "panel-agentes",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Panel a la derecha del chat que muestra qué hace cada subagente y con qué modelo, el uso de tus límites, y registra el consumo estimado por día y semana (/consumo).",
   "types": "./types/index.d.ts"
 }

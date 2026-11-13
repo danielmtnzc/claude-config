@@ -139,6 +139,7 @@ function mundo(on: On, archivos: Record<string, string> = {}) {
   on('command.register', (_, e) => ({ value: { command: (e as { name: string }).name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
   on('session.root', () => ({ value: '/proyectos/mi-app' }))
   on('session.usage', () => ({
     value: {
@@ -154,16 +155,18 @@ function mundo(on: On, archivos: Record<string, string> = {}) {
   on('process.run', () => ({
     value: { exitCode: 0, stdout: '+0100\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
-  on('fs.exists', (_, e) => ({ value: e.path in fs }))
+  // En Windows el motor devuelve rutas como C:\home\dani\...: se comparan sin unidad y con /.
+  const k = (path: string) => path.replace(/^[A-Za-z]:/, '').replaceAll('\\', '/')
+  on('fs.exists', (_, e) => ({ value: k(e.path) in fs }))
   on('fs.read', (_, e) => {
     if (e.path.endsWith('precios.json')) return { value: PRECIOS }
-    const text = fs[e.path]
+    const text = fs[k(e.path)]
     if (text === undefined) throw new Error('ENOENT')
 
     return { value: text }
   })
   on('fs.write', (_, e) => {
-    fs[e.path] = e.text
+    fs[k(e.path)] = e.text
 
     return { value: undefined }
   })
@@ -172,7 +175,7 @@ function mundo(on: On, archivos: Record<string, string> = {}) {
   return fs
 }
 
-const TOKENS = { input_tokens: 1_000, output_tokens: 2_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 100_000 }
+const TOKENS = { input_tokens: 100_000, output_tokens: 50_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 1_000_000 }
 
 test('cada turno deja una línea en el CSV del mes, con coste y límite', async ($, on) => {
   const fs = mundo(on)
@@ -197,16 +200,21 @@ test('cada turno deja una línea en el CSV del mes, con coste y límite', async 
   expect(lineas[0]).toBe(
     'fecha;hora;equipo;proyecto;agente;modelo;entrada;salida;cache_escritura;cache_lectura;coste_usd;limite_semanal_pct',
   )
-  // Sonnet: 1000*2 + 2000*10 + 100000*0,1 = 32000 / 1e6 = 0,032 $; hora local UTC+1.
-  expect(lineas[1]).toBe('2026-11-09;11:30;portatil;mi-app;principal;claude-sonnet-5-5;1000;2000;0;100000;0,0320;42,5')
-  // Opus: 1000*4 + 2000*20 + 100000*0,2 = 64000 / 1e6 = 0,064 $.
-  expect(lineas[2]).toBe('2026-11-09;11:30;portatil;mi-app;experto;claude-opus-5-5;1000;2000;0;100000;0,0640;42,5')
+  // Sonnet: 100000*2 + 50000*10 + 1000000*0,1 = 800000 / 1e6 = 0,8 $; hora local UTC+1.
+  expect(lineas[1]).toBe('2026-11-09;11:30;portatil;mi-app;principal;claude-sonnet-5-5;100000;50000;0;1000000;0,8000;42,5')
+  // Opus: 100000*4 + 50000*20 + 1000000*0,2 = 1,6 $.
+  expect(lineas[2]).toBe('2026-11-09;11:30;portatil;mi-app;experto;claude-opus-5-5;100000;50000;0;1000000;1,6000;42,5')
 
   // El panel muestra el límite y lo que costó el experto.
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Text', text: /Límite semanal 43% · 5 horas 12%/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /0,06 \$/ })).toBeDefined()
+    // 42,5% de la semana entre 0,8 $ registrados = 53,1 puntos por dólar: el experto (1,6 $) es ≈85%.
+    expect(await ui.find({ type: 'Text', text: /≈85%/ })).toBeDefined()
+    // La sesión principal (Sonnet) también aparece, con lo suyo (0,8 $ → ≈43%).
+    expect(await ui.find({ type: 'Text', text: /^principal$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /≈43%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /\$/ })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -235,12 +243,13 @@ test('/consumo resume por día y semana, con el límite semanal', async ($, on) 
     const ui = await $.ui.mount({ ...CONSUMO, surface })
     expect(await ui.find({ type: 'Text', text: /Límite semanal: 43%/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /se reinicia 12\/11 09:00/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /lu 09\/11\s+2,00 \$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /ma 03\/11\s+2,00 \$ · Opus 25%/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /principal 1,50 \$ · experto 0,50 \$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /sem\. 09\/11\s+2,00 \$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /sem\. 02\/11\s+2,02 \$ · Opus 25% · límite 33%/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /principal 1,50 \$ · rápido 0,02 \$ · experto 0,50 \$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /lu 09\/11\s+9,5% del límite semanal/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /ma 03\/11\s+1% del límite semanal · Opus 25%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /principal 0,8% · experto 0,3%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /sem\. 09\/11\s+43% del límite semanal/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /sem\. 02\/11\s+33% del límite semanal · Opus 25%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /principal 25% · rápido 0,3% · experto 8,2%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /\$/ })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -256,4 +265,39 @@ test('los agentes de un plugin se muestran sin el prefijo', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /reparto:/ })).toBeUndefined()
     await ui.unmount()
   }
+})
+
+test('lo de un chat se guarda al cerrarlo, se recupera al reabrirlo y un /clear deja el panel vacío', async ($, on) => {
+  mundo(on)
+  const store: Record<string, unknown> = {}
+  let id = 'chat-viejo'
+  on('session.id', () => ({ value: id }))
+  on('store.get', (_, e) => ({ value: store[(e as { key: string }).key] }))
+  on('store.set', (_, e) => {
+    store[(e as { key: string }).key] = (e as { value: unknown }).value
+
+    return { value: undefined }
+  })
+  on('store.delete', () => ({ value: undefined }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'ag-1' }))
+  await $.session.start({ cwd: '/proyectos/mi-app', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({ ...(SPAWN as object), subagentType: 'reparto:rapido' } as never)
+  await $.turn.complete({
+    answer: 'listo', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'ag-1',
+    usage: { ...TOKENS, model: 'claude-haiku-5-5' },
+  })
+
+  // /clear: el chat que acaba se guarda y el panel queda vacío para el nuevo.
+  await $.session.end({ reason: 'clear', sessionId: 'chat-viejo', resume: { id: 'chat-viejo' } } as never)
+  expect(store['chat:chat-viejo']).toBeDefined()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^rapido$/ })).toBeUndefined()
+  await ui.unmount()
+
+  // Al volver a abrir el chat viejo, vuelve su lista.
+  await $.session.start({ cwd: '/proyectos/mi-app', surface: 'desktop', isInteractive: true })
+  const ui2 = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui2.find({ type: 'Text', text: /Ningún agente todavía/ })).toBeUndefined()
+  await ui2.unmount()
+  id = 'chat-nuevo'
 })
