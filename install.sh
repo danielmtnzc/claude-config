@@ -31,20 +31,20 @@ fi
 
 # 2. Plugins
 if command -v claude >/dev/null 2>&1; then
-  # Si el marketplace se anadio desde el repositorio antiguo (sin -dev), se cambia por el nuevo.
-  if claude plugin marketplace list 2>/dev/null | grep -q 'danielmtnzc/claude-config'; then
+  # Si el marketplace se anadio desde el repositorio antiguo (danielmtnzc-dev), se cambia por el nuevo.
+  if claude plugin marketplace list 2>/dev/null | grep -q 'danielmtnzc-dev/claude-config'; then
     claude plugin marketplace remove claude-config >/dev/null 2>&1 || true
-    echo "Marketplace antiguo (danielmtnzc/claude-config) sustituido por danielmtnzc-dev/claude-config."
+    echo "Marketplace antiguo (danielmtnzc-dev/claude-config) sustituido por danielmtnzc/claude-config."
   fi
   claude plugin marketplace update claude-config >/dev/null 2>&1 || true
   for p in reparto panel-agentes; do
-    claude plugin install "$p" --marketplace danielmtnzc-dev/claude-config >/dev/null 2>&1 || true
+    claude plugin install "$p" --marketplace danielmtnzc/claude-config >/dev/null 2>&1 || true
     claude plugin update "$p@claude-config" >/dev/null 2>&1 || true
     echo "Plugin $p: instalado o actualizado."
   done
 else
   echo "No se encuentra el comando claude: instala los plugins reparto y panel-agentes"
-  echo "desde la app (+ junto al mensaje -> Plugins -> marketplace danielmtnzc-dev/claude-config)."
+  echo "desde la app (+ junto al mensaje -> Plugins -> marketplace danielmtnzc/claude-config)."
 fi
 
 echo "Listo. Abre una sesion nueva de Claude Code."

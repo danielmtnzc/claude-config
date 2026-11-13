@@ -13,13 +13,13 @@ Ni la verificación de Flutter ni el registro de consumo pasan por el modelo: no
 
 ## Instalar
 
-En la app de escritorio de Claude: pulsa **+** junto al cuadro de mensaje → **Plugins** → **Add marketplace**, escribe `danielmtnzc-dev/claude-config` y después **Add plugin** en `reparto` y en `panel-agentes`.
+En la app de escritorio de Claude: pulsa **+** junto al cuadro de mensaje → **Plugins** → **Add marketplace**, escribe `danielmtnzc/claude-config` y después **Add plugin** en `reparto` y en `panel-agentes`.
 
 O desde una terminal:
 
 ```
-claude plugin install reparto --marketplace danielmtnzc-dev/claude-config
-claude plugin install panel-agentes --marketplace danielmtnzc-dev/claude-config
+claude plugin install reparto --marketplace danielmtnzc/claude-config
+claude plugin install panel-agentes --marketplace danielmtnzc/claude-config
 ```
 
 O con el instalador del repositorio, que además **quita lo que dejaban las versiones anteriores** en `~/.claude` (los agentes `rapido`, `normal` y `experto`, y el bloque de reglas entre `claude-config:inicio` y `claude-config:fin` de `CLAUDE.md`, guardando una copia en `CLAUDE.md.bak`):
@@ -29,7 +29,7 @@ O con el instalador del repositorio, que además **quita lo que dejaban las vers
 
 En un ordenador que tenía instalada la versión anterior, ejecuta el instalador una vez para que no queden las reglas duplicadas.
 
-Como el repositorio es privado, el ordenador necesita tener git conectado a tu cuenta de GitHub (por ejemplo con `gh auth login` y `gh auth setup-git`). Los plugins se descargan de la rama `main` en GitHub: un cambio llega a los ordenadores después de hacer `git push`.
+El repositorio es público: no hace falta tener git conectado a ninguna cuenta para instalar los plugins. Se descargan de la rama `main` en GitHub, así que un cambio llega a los ordenadores después de hacer `git push`.
 
 ## Actualizar
 

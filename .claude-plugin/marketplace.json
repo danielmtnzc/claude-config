@@ -1,6 +1,6 @@
 {
   "name": "claude-config",
-  "owner": { "name": "danielmtnzc-dev" },
+  "owner": { "name": "danielmtnzc" },
   "plugins": [
     {
       "name": "reparto",
